@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "client",
+    "server",
+    "whip-rs", "client",
+]
+resolver = "3"
