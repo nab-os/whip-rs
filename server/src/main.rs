@@ -1,43 +1,271 @@
-use std::{path::PathBuf, sync::Mutex};
+use std::{collections::HashMap, sync::Arc};
+
+use thiserror::Error;
 
 use actix_cors::Cors;
 use actix_files as fs;
 use actix_web::{
-    App, HttpServer, Responder,
-    web::{self, Data},
+    App, HttpRequest, HttpResponse, HttpServer, Responder, delete, post,
+    web::{self, Data, Path},
+};
+use actix_web_httpauth::extractors::bearer::BearerAuth;
+
+use tokio::sync::Mutex;
+use webrtc::{
+    api::{
+        API, APIBuilder,
+        interceptor_registry::register_default_interceptors,
+        media_engine::{MIME_TYPE_H264, MIME_TYPE_OPUS, MediaEngine},
+    },
+    ice_transport::ice_server::RTCIceServer,
+    interceptor::registry::Registry,
+    peer_connection::{
+        RTCPeerConnection, configuration::RTCConfiguration,
+        peer_connection_state::RTCPeerConnectionState,
+        sdp::session_description::RTCSessionDescription, signaling_state::RTCSignalingState,
+    },
+    rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTPCodecType},
+    track::{
+        track_local::{TrackLocal, track_local_static_rtp::TrackLocalStaticRTP},
+        track_remote::TrackRemote,
+    },
 };
 
-#[derive(Clone, Debug)]
+use uuid::Uuid;
+
+#[derive(Clone)]
 struct WhipData {
-    sdp_offers: Vec<String>,
+    api: Arc<API>,
+    default_config: RTCConfiguration,
+    whips: Arc<Mutex<HashMap<Uuid, Arc<RTCPeerConnection>>>>,
+    subscriptions:
+        Arc<Mutex<HashMap<String, Vec<(Arc<TrackLocalStaticRTP>, Arc<TrackLocalStaticRTP>)>>>>,
 }
 
-async fn sdp_offer(offer: String, whip_data: Data<Mutex<WhipData>>) -> impl Responder {
-    let mut whip_data = whip_data.lock().unwrap();
-    println!("sdp_offer");
-    dbg!(offer.clone());
-    whip_data.sdp_offers.push(offer);
-    dbg!(whip_data.sdp_offers.len());
-    "{sdp answer}"
+#[derive(Error, Debug)]
+pub enum WhipRsError {
+    #[error("{0}")]
+    SessionGetError(#[from] actix_session::SessionGetError),
+    #[error("{0}")]
+    SessionInsertError(#[from] actix_session::SessionInsertError),
 }
 
-async fn sdp_offers(whip_data: Data<Mutex<WhipData>>) -> impl Responder {
-    let whip_data = whip_data.lock().unwrap();
-    println!("sdp_offers");
-    dbg!(whip_data.sdp_offers.len());
-    dbg!(whip_data.sdp_offers.clone());
-    let last_offer = whip_data.sdp_offers.last().unwrap().clone();
-    return last_offer;
+#[post("/whip")]
+async fn whip(auth: BearerAuth, offer: String, whip_data: Data<WhipData>) -> impl Responder {
+    let session_id = Uuid::new_v4();
+    println!("whip: {session_id}");
+    let stream_key = auth.token().to_string();
+    let pc = Arc::new(
+        whip_data
+            .api
+            .new_peer_connection(whip_data.default_config.clone())
+            .await
+            .unwrap(),
+    );
+
+    let wd = whip_data.clone();
+    let sk = stream_key.clone();
+    pc.on_track(Box::new(move |track: Arc<TrackRemote>, _, _| {
+        let subscribers_lock = wd.subscriptions.clone();
+        let sk = sk.clone();
+        tokio::spawn(async move {
+            println!("enter track loop {}", track.kind());
+            while let Ok((rtp, _)) = track.read_rtp().await {
+                let sk = sk.clone();
+                let mut subscriptions = subscribers_lock.lock().await;
+                let subscribers = subscriptions.get(&sk);
+                if let Some(subscribers) = subscribers {
+                    for (video_track, audio_track) in subscribers {
+                        match track.kind() {
+                            RTPCodecType::Video => {
+                                video_track
+                                    .write_rtp_with_extensions(&rtp.clone(), &[])
+                                    .await
+                                    .unwrap();
+                            }
+                            RTPCodecType::Audio => {
+                                audio_track
+                                    .write_rtp_with_extensions(&rtp.clone(), &[])
+                                    .await
+                                    .unwrap();
+                            }
+                            RTPCodecType::Unspecified => {}
+                        }
+                    }
+                } else {
+                    subscriptions.insert(sk, Vec::new());
+                }
+            }
+            println!("exit track loop {}", track.kind());
+        });
+        Box::pin(async move {})
+    }));
+
+    pc.on_signaling_state_change(Box::new(move |s: RTCSignalingState| {
+        println!("Signaling State has changed: {s}");
+        Box::pin(async {})
+    }));
+
+    pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
+        println!("Peer Connection State has changed: {s}");
+
+        if s == RTCPeerConnectionState::Failed {
+            // Wait until PeerConnection has had no network activity for 30 seconds or another failure. It may be reconnected using an ICE Restart.
+            // Use webrtc.PeerConnectionStateDisconnected if you are interested in detecting faster timeout.
+            // Note that the PeerConnection may come back from PeerConnectionStateDisconnected.
+            println!("Peer Connection has gone to failed exiting");
+        }
+
+        Box::pin(async {})
+    }));
+
+    pc.set_remote_description(RTCSessionDescription::offer(offer).unwrap())
+        .await
+        .unwrap();
+    let answer = pc.create_answer(None).await.unwrap();
+    pc.set_local_description(answer.clone()).await.unwrap();
+
+    pc.gathering_complete_promise().await.recv().await;
+
+    whip_data.whips.lock().await.insert(session_id, pc.clone());
+
+    HttpResponse::Created()
+        .content_type("application/sdp")
+        .insert_header(("Location", format!("/api/resource/{session_id}")))
+        .body(pc.local_description().await.unwrap().sdp)
+}
+
+#[delete("/resource/{session_id}")]
+async fn whip_stop(
+    auth: BearerAuth,
+    session_id: Path<String>,
+    whip_data: Data<WhipData>,
+) -> impl Responder {
+    println!("DELETE: {}", session_id);
+    let session_id = Uuid::parse_str(&session_id).unwrap();
+    let stream_key = auth.token().to_string();
+    let whips = whip_data.whips.lock().await;
+    let pc = whips.get(&session_id).unwrap();
+    pc.close().await.unwrap();
+
+    let mut subscriptions = whip_data.subscriptions.lock().await;
+    subscriptions.remove(&stream_key);
+    HttpResponse::Ok()
+}
+
+#[post("/whep")]
+async fn whep(auth: BearerAuth, offer: String, whip_data: Data<WhipData>) -> impl Responder {
+    let session_id = Uuid::new_v4();
+    println!("whep: {session_id}");
+    let stream_key = auth.token().to_string();
+    let pc = Arc::new(
+        whip_data
+            .api
+            .new_peer_connection(whip_data.default_config.clone())
+            .await
+            .unwrap(),
+    );
+
+    let video_track = Arc::new(TrackLocalStaticRTP::new(
+        RTCRtpCodecCapability {
+            mime_type: MIME_TYPE_H264.to_owned(),
+            ..Default::default()
+        },
+        format!("video_{session_id}"),
+        format!("webrtc-rs_{session_id}"),
+    ));
+    let audio_track = Arc::new(TrackLocalStaticRTP::new(
+        RTCRtpCodecCapability {
+            mime_type: MIME_TYPE_OPUS.to_owned(),
+            ..Default::default()
+        },
+        format!("audio_{session_id}"),
+        format!("webrtc-rs_{session_id}"),
+    ));
+
+    let _rtp_sender_video = pc
+        .add_track(Arc::clone(&video_track) as Arc<dyn TrackLocal + Send + Sync>)
+        .await
+        .unwrap();
+
+    let _rtp_sender_audio = pc
+        .add_track(Arc::clone(&audio_track) as Arc<dyn TrackLocal + Send + Sync>)
+        .await
+        .unwrap();
+
+    // tokio::spawn(async move {
+    //     let mut rtcp_buf = vec![0u8; 1500];
+    //     while let Ok((_, _)) = rtp_sender_video.read(&mut rtcp_buf).await {
+    //         println!("NACK video ?");
+    //     }
+    // });
+    // tokio::spawn(async move {
+    //     let mut rtcp_buf = vec![0u8; 1500];
+    //     while let Ok((_, _)) = rtp_sender_audio.read(&mut rtcp_buf).await {
+    //         println!("NACK audio ?");
+    //     }
+    // });
+
+    let mut subscriptions = whip_data.subscriptions.lock().await;
+    if let Some(subscribers) = subscriptions.get_mut(&stream_key) {
+        subscribers.push((video_track, audio_track));
+    } else {
+        subscriptions.insert(stream_key, Vec::new());
+    }
+
+    pc.set_remote_description(RTCSessionDescription::offer(offer).unwrap())
+        .await
+        .unwrap();
+    let answer = pc.create_answer(None).await.unwrap();
+    pc.set_local_description(answer.clone()).await.unwrap();
+
+    pc.gathering_complete_promise().await.recv().await;
+
+    let mut whips = whip_data.whips.lock().await;
+    whips.insert(session_id, pc);
+
+    HttpResponse::Created()
+        .content_type("application/sdp")
+        .insert_header(("Location", format!("/api/resource/{session_id}")))
+        .body(answer.sdp)
+}
+
+async fn not_found(req: HttpRequest) -> impl Responder {
+    dbg!(req);
+    HttpResponse::NotFound()
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let whip_data = Data::new(Mutex::new(WhipData { sdp_offers: vec![] }));
+    let config = RTCConfiguration {
+        ice_servers: vec![RTCIceServer {
+            urls: vec!["stun:stun.l.google.com:19302".to_owned()],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    // Api build
+    let mut m = MediaEngine::default();
+    m.register_default_codecs().unwrap();
+    let mut registry = Registry::new();
+    registry = register_default_interceptors(registry, &mut m).unwrap();
+    let api = APIBuilder::new()
+        .with_media_engine(m)
+        .with_interceptor_registry(registry)
+        .build();
+
+    let whip_data = Data::new(WhipData {
+        api: Arc::new(api),
+        default_config: config,
+        whips: Arc::new(Mutex::new(HashMap::new())),
+        subscriptions: Arc::new(Mutex::new(HashMap::new())),
+    });
 
     HttpServer::new(move || {
         let cors = Cors::default()
             .allow_any_origin()
-            .allowed_methods(["POST"]) // https://www.ietf.org/archive/id/draft-ietf-wish-whip-01.html#section-4-7
+            .allowed_methods(["POST", "DELETE"])
             .allow_any_header();
 
         App::new()
@@ -45,16 +273,19 @@ async fn main() -> std::io::Result<()> {
             .app_data(Data::clone(&whip_data.clone()))
             .service(
                 web::scope("/api")
-                    .route("/whip", web::post().to(sdp_offer))
-                    .route("/whep", web::post().to(sdp_offers)),
+                    .service(whip)
+                    .service(whep)
+                    .service(whip_stop),
             )
             .service(
                 fs::Files::new("", "./static")
                     .show_files_listing()
                     .use_last_modified(true),
             )
+            .default_service(web::to(not_found))
     })
-    .bind(("127.0.0.1", 8080))?
+    .bind(("127.0.0.1", 8080))
+    .unwrap()
     .run()
     .await
 }
