@@ -1,11 +1,11 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use thiserror::Error;
 
 use actix_cors::Cors;
 use actix_files as fs;
 use actix_web::{
-    App, HttpRequest, HttpResponse, HttpServer, Responder, delete, post,
+    App, HttpRequest, HttpResponse, HttpServer, Responder, delete, middleware, post,
     web::{self, Data, Path},
 };
 use actix_web_httpauth::extractors::bearer::BearerAuth;
@@ -24,6 +24,7 @@ use webrtc::{
         peer_connection_state::RTCPeerConnectionState,
         sdp::session_description::RTCSessionDescription, signaling_state::RTCSignalingState,
     },
+    rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication,
     rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTPCodecType},
     track::{
         track_local::{TrackLocal, track_local_static_rtp::TrackLocalStaticRTP},
@@ -48,6 +49,9 @@ pub enum WhipRsError {
     SessionGetError(#[from] actix_session::SessionGetError),
     #[error("{0}")]
     SessionInsertError(#[from] actix_session::SessionInsertError),
+
+    #[error("Bad UUID: {0}")]
+    BadUuid(#[from] uuid::Error),
 }
 
 #[post("/whip")]
@@ -65,7 +69,30 @@ async fn whip(auth: BearerAuth, offer: String, whip_data: Data<WhipData>) -> imp
 
     let wd = whip_data.clone();
     let sk = stream_key.clone();
+    let pc2 = pc.clone();
     pc.on_track(Box::new(move |track: Arc<TrackRemote>, _, _| {
+        // // RTCP
+        // let media_ssrc = track.ssrc();
+        // let pc2 = pc2.clone();
+        // tokio::spawn(async move {
+        //     let pc2 = pc2.clone();
+        //     let mut result = webrtc::error::Result::<usize>::Ok(0);
+        //     while result.is_ok() {
+        //         let pc2 = pc2.clone();
+        //         let timeout = tokio::time::sleep(Duration::from_secs(3));
+        //         tokio::pin!(timeout);
+
+        //         tokio::select! {
+        //         _ = timeout.as_mut() =>{
+        //                 result = pc2.write_rtcp(&[Box::new(PictureLossIndication{
+        //                     sender_ssrc: 0,
+        //                     media_ssrc,
+        //                 })]).await.map_err(Into::into);
+        //             }
+        //         }
+        //     }
+        // });
+
         let subscribers_lock = wd.subscriptions.clone();
         let sk = sk.clone();
         tokio::spawn(async move {
@@ -183,27 +210,23 @@ async fn whep(auth: BearerAuth, offer: String, whip_data: Data<WhipData>) -> imp
         format!("webrtc-rs_{session_id}"),
     ));
 
-    let _rtp_sender_video = pc
+    let rtp_sender_video = pc
         .add_track(Arc::clone(&video_track) as Arc<dyn TrackLocal + Send + Sync>)
         .await
         .unwrap();
 
-    let _rtp_sender_audio = pc
+    let rtp_sender_audio = pc
         .add_track(Arc::clone(&audio_track) as Arc<dyn TrackLocal + Send + Sync>)
         .await
         .unwrap();
 
     // tokio::spawn(async move {
     //     let mut rtcp_buf = vec![0u8; 1500];
-    //     while let Ok((_, _)) = rtp_sender_video.read(&mut rtcp_buf).await {
-    //         println!("NACK video ?");
-    //     }
+    //     while let Ok((_, _)) = rtp_sender_video.read(&mut rtcp_buf).await {}
     // });
     // tokio::spawn(async move {
     //     let mut rtcp_buf = vec![0u8; 1500];
-    //     while let Ok((_, _)) = rtp_sender_audio.read(&mut rtcp_buf).await {
-    //         println!("NACK audio ?");
-    //     }
+    //     while let Ok((_, _)) = rtp_sender_audio.read(&mut rtcp_buf).await {}
     // });
 
     let mut subscriptions = whip_data.subscriptions.lock().await;
@@ -270,6 +293,7 @@ async fn main() -> std::io::Result<()> {
 
         App::new()
             .wrap(cors)
+            .wrap(middleware::DefaultHeaders::new().add(("Permissions-Policy", "autoplay=(self)")))
             .app_data(Data::clone(&whip_data.clone()))
             .service(
                 web::scope("/api")
