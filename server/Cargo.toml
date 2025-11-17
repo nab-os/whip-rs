@@ -15,4 +15,3 @@ thiserror = "2.0.17"
 tokio = "1.48.0"
 uuid = { version = "1.18.1", features = ["serde", "v4", "v8"] }
 webrtc = "0.14.0"
-whip-rs = { path = "../whip-rs" }
