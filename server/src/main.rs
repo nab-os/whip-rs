@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc};
 
 use thiserror::Error;
 
@@ -24,10 +24,9 @@ use webrtc::{
         peer_connection_state::RTCPeerConnectionState,
         sdp::session_description::RTCSessionDescription, signaling_state::RTCSignalingState,
     },
-    rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication,
     rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTPCodecType},
     track::{
-        track_local::{TrackLocal, track_local_static_rtp::TrackLocalStaticRTP},
+        track_local::{TrackLocal, TrackLocalWriter, track_local_static_rtp::TrackLocalStaticRTP},
         track_remote::TrackRemote,
     },
 };
@@ -105,16 +104,10 @@ async fn whip(auth: BearerAuth, offer: String, whip_data: Data<WhipData>) -> imp
                     for (video_track, audio_track) in subscribers {
                         match track.kind() {
                             RTPCodecType::Video => {
-                                video_track
-                                    .write_rtp_with_extensions(&rtp.clone(), &[])
-                                    .await
-                                    .unwrap();
+                                video_track.write_rtp(&rtp).await.unwrap();
                             }
                             RTPCodecType::Audio => {
-                                audio_track
-                                    .write_rtp_with_extensions(&rtp.clone(), &[])
-                                    .await
-                                    .unwrap();
+                                audio_track.write_rtp(&rtp).await.unwrap();
                             }
                             RTPCodecType::Unspecified => {}
                         }
@@ -145,6 +138,8 @@ async fn whip(auth: BearerAuth, offer: String, whip_data: Data<WhipData>) -> imp
 
         Box::pin(async {})
     }));
+
+    dbg!(offer.clone());
 
     pc.set_remote_description(RTCSessionDescription::offer(offer).unwrap())
         .await
