@@ -1639,6 +1639,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "omniroom"
+version = "0.1.0"
+dependencies = [
+ "actix-cors",
+ "actix-files",
+ "actix-session",
+ "actix-web",
+ "actix-web-httpauth",
+ "actix-web-lab",
+ "futures-util",
+ "thiserror 2.0.17",
+ "tokio",
+ "uuid",
+ "webrtc",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2206,23 +2223,6 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
-]
-
-[[package]]
-name = "server"
-version = "0.1.0"
-dependencies = [
- "actix-cors",
- "actix-files",
- "actix-session",
- "actix-web",
- "actix-web-httpauth",
- "actix-web-lab",
- "futures-util",
- "thiserror 2.0.17",
- "tokio",
- "uuid",
- "webrtc",
 ]
 
 [[package]]

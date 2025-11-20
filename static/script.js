@@ -24,7 +24,8 @@ function initCalls() {
 
 function createCall(identifier) {
     console.log("Calling: " + identifier);
-    connections[identifier] = new RTCPeerConnection();
+    const configuration = {'iceServers': [{'urls': 'stun:stun.l.google.com:19302'}]}
+    connections[identifier] = new RTCPeerConnection(configuration);
     
     connections[identifier].addTransceiver('audio', { direction: 'recvonly' })
     connections[identifier].addTransceiver('video', { direction: 'recvonly' })
@@ -56,7 +57,7 @@ async function start_gathering(identifier) {
 }
 
 async function send_sdp_offer(identifier) {
-    return fetch("http://localhost:8080/api/whep", {
+    return fetch("/api/whep", {
         headers: {
              Accept: "application/sdp",
             "Content-Type": "application/sdp",

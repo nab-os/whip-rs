@@ -17,11 +17,15 @@ use webrtc::{
         interceptor_registry::register_default_interceptors,
         media_engine::{MIME_TYPE_H264, MIME_TYPE_OPUS, MediaEngine},
     },
-    ice_transport::ice_server::RTCIceServer,
+    ice_transport::{
+        ice_candidate::{RTCIceCandidate, RTCIceCandidateInit},
+        ice_server::RTCIceServer,
+    },
     interceptor::registry::Registry,
     peer_connection::{
         RTCPeerConnection, configuration::RTCConfiguration,
         peer_connection_state::RTCPeerConnectionState,
+        policy::ice_transport_policy::RTCIceTransportPolicy,
         sdp::session_description::RTCSessionDescription, signaling_state::RTCSignalingState,
     },
     rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTPCodecType},
@@ -147,7 +151,16 @@ async fn whip(auth: BearerAuth, offer: String, whip_data: Data<WhipData>) -> imp
     let answer = pc.create_answer(None).await.unwrap();
     pc.set_local_description(answer.clone()).await.unwrap();
 
+    pc.on_ice_candidate(Box::new(move |c: Option<RTCIceCandidate>| {
+        if let Some(candidate) = c {
+            dbg!(candidate.to_string());
+        }
+        Box::pin(async {})
+    }));
+
     pc.gathering_complete_promise().await.recv().await;
+
+    // pc.add_ice_candidate(RTCIceCandidateInit { candidate: , sdp_mid: todo!(), sdp_mline_index: todo!(), username_fragment: todo!() })
 
     whip_data.whips.lock().await.insert(session_id, pc.clone());
 
@@ -299,11 +312,12 @@ async fn main() -> std::io::Result<()> {
             .service(
                 fs::Files::new("", "./static")
                     .show_files_listing()
+                    .index_file("index.html")
                     .use_last_modified(true),
             )
             .default_service(web::to(not_found))
     })
-    .bind(("127.0.0.1", 8080))
+    .bind(("0.0.0.0", 8080))
     .unwrap()
     .run()
     .await

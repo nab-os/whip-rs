@@ -1,20 +1,32 @@
-# Use the official Rust image as a base
-FROM rust:trixie
+FROM rust:trixie AS build
 
-# Set the working directory to /app
-WORKDIR /app
+# create a new empty shell project
+RUN USER=root cargo new --bin omniroom
+WORKDIR /omniroom
 
-# Copy the Cargo.toml file into the working directory
-COPY . .
+# copy over your manifests
+COPY ./Cargo.lock ./Cargo.lock
+COPY ./Cargo.toml ./Cargo.toml
 
-# Build the Rust application
+# this build step will cache your dependencies
+RUN cargo build --release
+RUN rm src/*.rs
+
+# copy your source tree
+COPY ./src ./src
+COPY ./static ./static
+
+# build for release
+RUN rm ./target/release/deps/omniroom*
 RUN cargo build --release
 
-# Copy the built application into the working directory
-COPY target/release/* .
+# our final base
+FROM debian:trixie-slim
+WORKDIR /app
 
-# Expose the port that the application will listen on
-EXPOSE 8080
+# copy the build artifact from the build stage
+COPY --from=build /omniroom/target/release/omniroom .
+COPY --from=build /omniroom/static ./static
 
-# Run the command to start the application when the container is launched
-CMD ["./main"]
+# set the startup command to run your binary
+CMD ["./omniroom"]
