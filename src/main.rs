@@ -150,7 +150,6 @@ async fn whip(
         let subscribers_lock = wd.subscriptions.clone();
         let sk = sk.clone();
         tokio::spawn(async move {
-            println!("enter track loop {}", track.kind());
             while let Ok((rtp, _)) = track.read_rtp().await {
                 let sk = sk.clone();
                 let mut subscriptions = subscribers_lock.lock().await;
@@ -171,27 +170,8 @@ async fn whip(
                     subscriptions.insert(sk, Vec::new());
                 }
             }
-            println!("exit track loop {}", track.kind());
         });
         Box::pin(async move {})
-    }));
-
-    pc.on_signaling_state_change(Box::new(move |s: RTCSignalingState| {
-        println!("Signaling State has changed: {s}");
-        Box::pin(async {})
-    }));
-
-    pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-        println!("Peer Connection State has changed: {s}");
-
-        if s == RTCPeerConnectionState::Failed {
-            // Wait until PeerConnection has had no network activity for 30 seconds or another failure. It may be reconnected using an ICE Restart.
-            // Use webrtc.PeerConnectionStateDisconnected if you are interested in detecting faster timeout.
-            // Note that the PeerConnection may come back from PeerConnectionStateDisconnected.
-            println!("Peer Connection has gone to failed exiting");
-        }
-
-        Box::pin(async {})
     }));
 
     pc.set_remote_description(RTCSessionDescription::offer(offer)?)
@@ -229,7 +209,6 @@ async fn whip_stop(
     session_id: Path<String>,
     whip_data: Data<WhipData>,
 ) -> Result<impl Responder> {
-    println!("DELETE: {}", session_id);
     let session_id = Uuid::parse_str(&session_id)?;
     let stream_key = auth.token().to_string();
     let whips = whip_data.whips.lock().await;
@@ -248,7 +227,7 @@ async fn whep(
     whip_data: Data<WhipData>,
 ) -> Result<impl Responder> {
     let session_id = Uuid::new_v4();
-    println!("whep: {session_id}");
+    println!("New whep session: {session_id}");
     let stream_key = auth.token().to_string();
     let pc = Arc::new(
         whip_data
