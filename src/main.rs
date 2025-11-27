@@ -1,4 +1,6 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, env, sync::Arc};
+
+use argh::FromArgs;
 
 use actix_cors::Cors;
 use actix_files as fs;
@@ -40,6 +42,18 @@ use webrtc::{
 };
 
 use uuid::Uuid;
+
+/// Whip signaling broadcast server
+#[derive(FromArgs)]
+struct Args {
+    /// an optional port to setup udp muxing
+    #[argh(option)]
+    udp_mux_port: Option<u16>,
+
+    /// an optional list of ips separated by '|' to setup nat 1 to 1
+    #[argh(option)]
+    nat_ips: Option<String>,
+}
 
 #[derive(Clone)]
 struct WhipData {
@@ -339,11 +353,37 @@ async fn main() -> std::io::Result<()> {
     // Api build
     let mut m = MediaEngine::default();
     m.register_default_codecs().unwrap();
-    let udp_socket = UdpSocket::bind(("0.0.0.0", 4004)).await.unwrap();
-    let udp_mux = UDPMuxDefault::new(UDPMuxParams::new(udp_socket));
+
+    // Settings
     let mut setting_engine = SettingEngine::default();
-    setting_engine.set_udp_network(UDPNetwork::Muxed(udp_mux));
-    setting_engine.set_nat_1to1_ips(vec!["public_ip".to_string()], RTCIceCandidateType::Srflx);
+
+    let mut udp_mux_port: Option<u16> = match env::var("UDP_MUX_PORT").ok() {
+        Some(port) => port.parse::<u16>().ok(),
+        None => None,
+    };
+    if let Some(udp_port) = args.udp_mux_port {
+        udp_mux_port = Some(udp_port);
+    }
+    if let Some(udp_port) = udp_mux_port {
+        println!("Using UDP MUX port: {}", udp_port);
+        let udp_socket = UdpSocket::bind(("0.0.0.0", udp_port)).await.unwrap();
+        let udp_mux = UDPMuxDefault::new(UDPMuxParams::new(udp_socket));
+        setting_engine.set_udp_network(UDPNetwork::Muxed(udp_mux));
+    }
+
+    let mut nat_ips: Option<String> = env::var("NAT_IPS").ok();
+    if let Some(ips) = args.nat_ips {
+        nat_ips = Some(ips);
+    }
+    if let Some(nat_ips) = nat_ips {
+        let nat_ips: Vec<String> = nat_ips.split(',').map(|ip| ip.to_string()).collect();
+        println!("Using NAT 1 to 1 with IPs:");
+        for ip in nat_ips.clone().into_iter() {
+            println!(" - {}", ip);
+        }
+        setting_engine.set_nat_1to1_ips(nat_ips, RTCIceCandidateType::Host);
+    }
+
     let mut registry = Registry::new();
     registry = register_default_interceptors(registry, &mut m).unwrap();
     let api = APIBuilder::new()

@@ -24,6 +24,9 @@ RUN cargo build --release
 FROM debian:trixie-slim
 WORKDIR /app
 
+ENV UDP_MUX_PORT=
+ENV NAT_IPS=
+
 # copy the build artifact from the build stage
 COPY --from=build /omniroom/target/release/omniroom .
 COPY --from=build /omniroom/static ./static
