@@ -194,8 +194,6 @@ async fn whip(
         Box::pin(async {})
     }));
 
-    dbg!(offer.clone());
-
     pc.set_remote_description(RTCSessionDescription::offer(offer)?)
         .await?;
     let answer = pc.create_answer(None).await?;
@@ -206,7 +204,6 @@ async fn whip(
         let pc2 = pc2.clone();
         Box::pin(async move {
             if let Some(candidate) = c {
-                dbg!(candidate.to_json().unwrap().candidate);
                 pc2.add_ice_candidate(candidate.to_json().unwrap())
                     .await
                     .unwrap();
@@ -320,7 +317,6 @@ async fn whep(
 }
 
 async fn not_found(req: HttpRequest) -> impl Responder {
-    dbg!(req);
     HttpResponse::NotFound()
 }
 
