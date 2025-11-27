@@ -1,4 +1,5 @@
 # Omniroom
+Simple whip broadcast server made with Rust
 
 ## Performances
 Latency around 20ms with [meetecho/simple-whip-client](https://github.com/meetecho/simple-whip-client) as a client OBS as a virtual webcam.  
