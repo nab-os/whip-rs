@@ -1,0 +1,12 @@
+services:
+  whip-rs:
+    image: 4gjr3z1t/omniroom:dev
+    hostname: whip-rs
+    container_name: whip-rs
+    environment:
+      - PORT=8080
+      - UDP_MUX_PORT=4004
+      - NAT_IPS=<public_ip>
+    ports:
+      - 8080:8080
+      - 4004:4004
