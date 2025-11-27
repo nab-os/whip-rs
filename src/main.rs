@@ -92,7 +92,7 @@ async fn whip(
 
     let wd = whip_data.clone();
     let sk = stream_key.clone();
-    let pc2 = pc.clone();
+    // let pc2 = pc.clone();
     pc.on_track(Box::new(move |track: Arc<TrackRemote>, _, _| {
         // // RTCP
         // let media_ssrc = track.ssrc();
@@ -240,11 +240,11 @@ async fn whep(
         format!("webrtc-rs_{session_id}"),
     ));
 
-    let rtp_sender_video = pc
+    let _rtp_sender_video = pc
         .add_track(Arc::clone(&video_track) as Arc<dyn TrackLocal + Send + Sync>)
         .await?;
 
-    let rtp_sender_audio = pc
+    let _rtp_sender_audio = pc
         .add_track(Arc::clone(&audio_track) as Arc<dyn TrackLocal + Send + Sync>)
         .await?;
 
