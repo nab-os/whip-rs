@@ -1,16 +1,21 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use thiserror::Error;
 
 use actix_cors::Cors;
 use actix_files as fs;
 use actix_web::{
-    App, HttpRequest, HttpResponse, HttpServer, Responder, delete, middleware, post,
+    App, HttpRequest, HttpResponse, HttpServer, Responder, delete, get, middleware, post, rt,
     web::{self, Data, Path},
 };
 use actix_web_httpauth::extractors::bearer::BearerAuth;
+use actix_ws::AggregatedMessage;
+use futures_util::StreamExt as _;
 
-use tokio::sync::Mutex;
+use tokio::sync::{
+    Mutex,
+    mpsc::{self, Receiver, Sender, channel},
+};
 use webrtc::{
     api::{
         API, APIBuilder,
@@ -28,6 +33,7 @@ use webrtc::{
         policy::ice_transport_policy::RTCIceTransportPolicy,
         sdp::session_description::RTCSessionDescription, signaling_state::RTCSignalingState,
     },
+    rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication,
     rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTPCodecType},
     track::{
         track_local::{TrackLocal, TrackLocalWriter, track_local_static_rtp::TrackLocalStaticRTP},
@@ -37,11 +43,14 @@ use webrtc::{
 
 use uuid::Uuid;
 
+mod websocket;
+
 #[derive(Clone)]
 struct WhipData {
     api: Arc<API>,
     default_config: RTCConfiguration,
     whips: Arc<Mutex<HashMap<Uuid, Arc<RTCPeerConnection>>>>,
+    channels: Arc<Mutex<HashMap<Uuid, Receiver<RTCIceCandidate>>>>,
     subscriptions:
         Arc<Mutex<HashMap<String, Vec<(Arc<TrackLocalStaticRTP>, Arc<TrackLocalStaticRTP>)>>>>,
 }
@@ -62,6 +71,9 @@ async fn whip(auth: BearerAuth, offer: String, whip_data: Data<WhipData>) -> imp
     let session_id = Uuid::new_v4();
     println!("whip: {session_id}");
     let stream_key = auth.token().to_string();
+
+    let (tx, rx) = channel::<RTCIceCandidate>(100);
+
     let pc = Arc::new(
         whip_data
             .api
@@ -74,27 +86,27 @@ async fn whip(auth: BearerAuth, offer: String, whip_data: Data<WhipData>) -> imp
     let sk = stream_key.clone();
     let pc2 = pc.clone();
     pc.on_track(Box::new(move |track: Arc<TrackRemote>, _, _| {
-        // // RTCP
-        // let media_ssrc = track.ssrc();
-        // let pc2 = pc2.clone();
-        // tokio::spawn(async move {
-        //     let pc2 = pc2.clone();
-        //     let mut result = webrtc::error::Result::<usize>::Ok(0);
-        //     while result.is_ok() {
-        //         let pc2 = pc2.clone();
-        //         let timeout = tokio::time::sleep(Duration::from_secs(3));
-        //         tokio::pin!(timeout);
+        // RTCP
+        let media_ssrc = track.ssrc();
+        let pc2 = pc2.clone();
+        tokio::spawn(async move {
+            let pc2 = pc2.clone();
+            let mut result = webrtc::error::Result::<usize>::Ok(0);
+            while result.is_ok() {
+                let pc2 = pc2.clone();
+                let timeout = tokio::time::sleep(Duration::from_secs(3));
+                tokio::pin!(timeout);
 
-        //         tokio::select! {
-        //         _ = timeout.as_mut() =>{
-        //                 result = pc2.write_rtcp(&[Box::new(PictureLossIndication{
-        //                     sender_ssrc: 0,
-        //                     media_ssrc,
-        //                 })]).await.map_err(Into::into);
-        //             }
-        //         }
-        //     }
-        // });
+                tokio::select! {
+                _ = timeout.as_mut() =>{
+                        result = pc2.write_rtcp(&[Box::new(PictureLossIndication{
+                            sender_ssrc: 0,
+                            media_ssrc,
+                        })]).await.map_err(Into::into);
+                    }
+                }
+            }
+        });
 
         let subscribers_lock = wd.subscriptions.clone();
         let sk = sk.clone();
@@ -154,15 +166,17 @@ async fn whip(auth: BearerAuth, offer: String, whip_data: Data<WhipData>) -> imp
     pc.on_ice_candidate(Box::new(move |c: Option<RTCIceCandidate>| {
         if let Some(candidate) = c {
             dbg!(candidate.to_string());
+            tx.try_send(candidate).unwrap();
         }
         Box::pin(async {})
     }));
 
-    pc.gathering_complete_promise().await.recv().await;
+    // pc.gathering_complete_promise().await.recv().await;
 
-    // pc.add_ice_candidate(RTCIceCandidateInit { candidate: , sdp_mid: todo!(), sdp_mline_index: todo!(), username_fragment: todo!() })
+    dbg!(pc.local_description().await.unwrap().sdp);
 
     whip_data.whips.lock().await.insert(session_id, pc.clone());
+    whip_data.channels.lock().await.insert(session_id, rx);
 
     HttpResponse::Created()
         .content_type("application/sdp")
@@ -193,6 +207,9 @@ async fn whep(auth: BearerAuth, offer: String, whip_data: Data<WhipData>) -> imp
     let session_id = Uuid::new_v4();
     println!("whep: {session_id}");
     let stream_key = auth.token().to_string();
+
+    let (tx, rx) = channel::<RTCIceCandidate>(100);
+
     let pc = Arc::new(
         whip_data
             .api
@@ -244,16 +261,25 @@ async fn whep(auth: BearerAuth, offer: String, whip_data: Data<WhipData>) -> imp
         subscriptions.insert(stream_key, Vec::new());
     }
 
+    pc.on_ice_candidate(Box::new(move |c: Option<RTCIceCandidate>| {
+        if let Some(candidate) = c {
+            dbg!(candidate.to_string());
+            tx.try_send(candidate).unwrap();
+        }
+        Box::pin(async {})
+    }));
+
     pc.set_remote_description(RTCSessionDescription::offer(offer).unwrap())
         .await
         .unwrap();
     let answer = pc.create_answer(None).await.unwrap();
     pc.set_local_description(answer.clone()).await.unwrap();
 
-    pc.gathering_complete_promise().await.recv().await;
+    // pc.gathering_complete_promise().await.recv().await;
 
     let mut whips = whip_data.whips.lock().await;
     whips.insert(session_id, pc);
+    whip_data.channels.lock().await.insert(session_id, rx);
 
     HttpResponse::Created()
         .content_type("application/sdp")
@@ -264,6 +290,66 @@ async fn whep(auth: BearerAuth, offer: String, whip_data: Data<WhipData>) -> imp
 async fn not_found(req: HttpRequest) -> impl Responder {
     dbg!(req);
     HttpResponse::NotFound()
+}
+
+#[get("/resource/{session_id}")]
+async fn signaling(
+    session_id: Path<String>,
+    whip_data: Data<WhipData>,
+    req: HttpRequest,
+    stream: web::Payload,
+) -> impl Responder {
+    println!("New websocket");
+    let (res, mut session, stream) = actix_ws::handle(&req, stream).unwrap();
+
+    let mut stream = stream
+        .aggregate_continuations()
+        // aggregate continuation frames up to 1MiB
+        .max_continuation_size(2_usize.pow(20));
+
+    let session_id = Uuid::parse_str(&session_id).unwrap();
+
+    let wd = whip_data.clone();
+    rt::spawn(async move {
+        let mut channels = wd.channels.lock().await;
+        let rx = channels.get_mut(&session_id).unwrap();
+        while let Some(candidate) = rx.recv().await {
+            let candidate = candidate.to_json().unwrap();
+            session
+                .text(serde_json::to_string(&candidate).unwrap())
+                .await
+                .unwrap();
+        }
+    });
+
+    // start task but don't wait for it
+    let wd = whip_data.clone();
+    rt::spawn(async move {
+        // receive messages from websocket
+        while let Some(msg) = stream.next().await {
+            match msg {
+                Ok(AggregatedMessage::Text(text)) => {
+                    let candidate: RTCIceCandidateInit = serde_json::from_str(&text).unwrap();
+                    let mut whips = wd.whips.lock().await;
+                    let pc = whips.get_mut(&session_id).unwrap();
+                    pc.add_ice_candidate(candidate).await.unwrap();
+                }
+
+                Ok(AggregatedMessage::Binary(bin)) => {
+                    // echo binary message
+                }
+
+                Ok(AggregatedMessage::Ping(msg)) => {
+                    // respond to PING frame with PONG frame
+                }
+
+                _ => {}
+            }
+        }
+    });
+
+    // respond immediately with response connected to WS session
+    res
 }
 
 #[actix_web::main]
@@ -290,6 +376,7 @@ async fn main() -> std::io::Result<()> {
         api: Arc::new(api),
         default_config: config,
         whips: Arc::new(Mutex::new(HashMap::new())),
+        channels: Arc::new(Mutex::new(HashMap::new())),
         subscriptions: Arc::new(Mutex::new(HashMap::new())),
     });
 
@@ -307,7 +394,8 @@ async fn main() -> std::io::Result<()> {
                 web::scope("/api")
                     .service(whip)
                     .service(whep)
-                    .service(whip_stop),
+                    .service(whip_stop)
+                    .service(signaling),
             )
             .service(
                 fs::Files::new("", "./static")
