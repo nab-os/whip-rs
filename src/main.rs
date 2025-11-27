@@ -390,6 +390,7 @@ async fn main() -> std::io::Result<()> {
         subscriptions: Arc::new(Mutex::new(HashMap::new())),
     });
 
+    println!("Listening on 0.0.0.0:{web_port}");
     HttpServer::new(move || {
         let cors = Cors::default()
             .allow_any_origin()
