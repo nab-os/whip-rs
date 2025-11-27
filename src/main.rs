@@ -5,7 +5,7 @@ use argh::FromArgs;
 use actix_cors::Cors;
 use actix_files as fs;
 use actix_web::{
-    App, HttpRequest, HttpResponse, HttpServer, Responder, ResponseError, delete,
+    App, HttpResponse, HttpServer, Responder, ResponseError, delete,
     http::{StatusCode, header::ContentType},
     middleware, post,
     web::{self, Data, Path},
