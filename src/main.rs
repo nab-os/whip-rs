@@ -316,7 +316,7 @@ async fn whep(
         .body(late_answer))
 }
 
-async fn not_found(req: HttpRequest) -> impl Responder {
+async fn not_found() -> impl Responder {
     HttpResponse::NotFound()
 }
 
