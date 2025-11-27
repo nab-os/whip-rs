@@ -1,4 +1,4 @@
-use std::{collections::HashMap, env, sync::Arc};
+use std::{collections::HashMap, env, sync::Arc, time::Duration};
 
 use argh::FromArgs;
 
@@ -34,6 +34,7 @@ use webrtc::{
         peer_connection_state::RTCPeerConnectionState,
         sdp::session_description::RTCSessionDescription, signaling_state::RTCSignalingState,
     },
+    rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication,
     rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTPCodecType},
     track::{
         track_local::{TrackLocal, TrackLocalWriter, track_local_static_rtp::TrackLocalStaticRTP},
@@ -111,7 +112,7 @@ async fn whip(
     whip_data: Data<WhipData>,
 ) -> Result<impl Responder> {
     let session_id = Uuid::new_v4();
-    println!("whip: {session_id}");
+    println!("New whip session: {session_id}");
     let stream_key = auth.token().to_string();
     let pc = Arc::new(
         whip_data
@@ -122,29 +123,29 @@ async fn whip(
 
     let wd = whip_data.clone();
     let sk = stream_key.clone();
-    // let pc2 = pc.clone();
+    let pc2 = pc.clone();
     pc.on_track(Box::new(move |track: Arc<TrackRemote>, _, _| {
-        // // RTCP
-        // let media_ssrc = track.ssrc();
-        // let pc2 = pc2.clone();
-        // tokio::spawn(async move {
-        //     let pc2 = pc2.clone();
-        //     let mut result = webrtc::error::Result::<usize>::Ok(0);
-        //     while result.is_ok() {
-        //         let pc2 = pc2.clone();
-        //         let timeout = tokio::time::sleep(Duration::from_secs(3));
-        //         tokio::pin!(timeout);
+        // RTCP
+        let media_ssrc = track.ssrc();
+        let pc2 = pc2.clone();
+        tokio::spawn(async move {
+            let pc2 = pc2.clone();
+            let mut result = webrtc::error::Result::<usize>::Ok(0);
+            while result.is_ok() {
+                let pc2 = pc2.clone();
+                let timeout = tokio::time::sleep(Duration::from_secs(3));
+                tokio::pin!(timeout);
 
-        //         tokio::select! {
-        //         _ = timeout.as_mut() =>{
-        //                 result = pc2.write_rtcp(&[Box::new(PictureLossIndication{
-        //                     sender_ssrc: 0,
-        //                     media_ssrc,
-        //                 })]).await.map_err(Into::into);
-        //             }
-        //         }
-        //     }
-        // });
+                tokio::select! {
+                _ = timeout.as_mut() =>{
+                        result = pc2.write_rtcp(&[Box::new(PictureLossIndication{
+                            sender_ssrc: 0,
+                            media_ssrc,
+                        })]).await.map_err(Into::into);
+                    }
+                }
+            }
+        });
 
         let subscribers_lock = wd.subscriptions.clone();
         let sk = sk.clone();
@@ -259,25 +260,6 @@ async fn whep(
             .await?,
     );
 
-    // pc.on_ice_candidate(Box::new(move |c: Option<RTCIceCandidate>| {
-    //     Box::pin(async move {
-    //         if let Some(candidate) = c {
-    //             dbg!(candidate.to_json().unwrap().candidate);
-    //         }
-    //     })
-    // }));
-    // let mut base_config = CandidateBaseConfig::default();
-    // base_config.port = 4004;
-    // base_config.address = "82.64.62.90".to_string();
-    // let candidate_config = CandidateServerReflexiveConfig {
-    //     base_config,
-    //     rel_addr: "0.0.0.0".to_string(),
-    //     rel_port: 4004,
-    // };
-    // let custom_candidate = candidate_config.new_candidate_server_reflexive().unwrap();
-    // dbg!(custom_candidate.to_string());
-    // pc.add_ice_candidate(custom_candidate.);
-
     let video_track = Arc::new(TrackLocalStaticRTP::new(
         RTCRtpCodecCapability {
             mime_type: MIME_TYPE_H264.to_owned(),
@@ -295,22 +277,22 @@ async fn whep(
         format!("webrtc-rs_{session_id}"),
     ));
 
-    let _rtp_sender_video = pc
+    let rtp_sender_video = pc
         .add_track(Arc::clone(&video_track) as Arc<dyn TrackLocal + Send + Sync>)
         .await?;
 
-    let _rtp_sender_audio = pc
+    let rtp_sender_audio = pc
         .add_track(Arc::clone(&audio_track) as Arc<dyn TrackLocal + Send + Sync>)
         .await?;
 
-    // tokio::spawn(async move {
-    //     let mut rtcp_buf = vec![0u8; 1500];
-    //     while let Ok((_, _)) = rtp_sender_video.read(&mut rtcp_buf).await {}
-    // });
-    // tokio::spawn(async move {
-    //     let mut rtcp_buf = vec![0u8; 1500];
-    //     while let Ok((_, _)) = rtp_sender_audio.read(&mut rtcp_buf).await {}
-    // });
+    tokio::spawn(async move {
+        let mut rtcp_buf = vec![0u8; 1500];
+        while let Ok((_, _)) = rtp_sender_video.read(&mut rtcp_buf).await {}
+    });
+    tokio::spawn(async move {
+        let mut rtcp_buf = vec![0u8; 1500];
+        while let Ok((_, _)) = rtp_sender_audio.read(&mut rtcp_buf).await {}
+    });
 
     let mut subscriptions = whip_data.subscriptions.lock().await;
     if let Some(subscribers) = subscriptions.get_mut(&stream_key) {
