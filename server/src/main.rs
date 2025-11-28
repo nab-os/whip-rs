@@ -178,18 +178,6 @@ async fn whip(
     let answer = pc.create_answer(None).await?;
     pc.set_local_description(answer.clone()).await?;
 
-    let pc2 = pc.clone();
-    pc.on_ice_candidate(Box::new(move |c: Option<RTCIceCandidate>| {
-        let pc2 = pc2.clone();
-        Box::pin(async move {
-            if let Some(candidate) = c {
-                pc2.add_ice_candidate(candidate.to_json().unwrap())
-                    .await
-                    .unwrap();
-            }
-        })
-    }));
-
     pc.gathering_complete_promise().await.recv().await;
 
     whip_data.whips.lock().await.insert(session_id, pc.clone());

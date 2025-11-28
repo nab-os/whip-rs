@@ -1,18 +1,3 @@
-[package]
-name = "omniroom"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-actix-cors = "0.7.1"
-actix-files = "0.6.8"
-actix-session = { version = "0.11.0", features = ["cookie-session", "redis-session"] }
-actix-web = "4.11.0"
-actix-web-httpauth = "0.8.2"
-actix-web-lab = "0.24.3"
-argh = "0.1.13"
-futures-util = "0.3.31"
-thiserror = "2.0.17"
-tokio = "1.48.0"
-uuid = { version = "1.18.1", features = ["serde", "v4", "v8"] }
-webrtc = "0.14.0"
+[workspace]
+members = ["server"]
+resolver = "3"
