@@ -1,0 +1,11 @@
+[package]
+name = "omniroom-client"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+argh = "0.1.13"
+futures-util = "0.3.31"
+thiserror = "2.0.17"
+tokio = "1.48.0"
+webrtc = "0.14.0"

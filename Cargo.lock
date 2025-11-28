@@ -1689,6 +1689,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "omniroom-client"
+version = "0.1.0"
+dependencies = [
+ "argh",
+ "futures-util",
+ "thiserror 2.0.17",
+ "tokio",
+ "webrtc",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
