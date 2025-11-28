@@ -1,4 +1,9 @@
 use std::{env, sync::Arc};
+use webrtc::{
+    api::media_engine::{MIME_TYPE_H264, MIME_TYPE_OPUS},
+    rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
+    track::track_local::{TrackLocal, track_local_static_rtp::TrackLocalStaticRTP},
+};
 
 use argh::FromArgs;
 
@@ -96,6 +101,40 @@ async fn main() -> Result<()> {
 
     let pc = Arc::new(api.new_peer_connection(default_config).await?);
 
+    let video_track = Arc::new(TrackLocalStaticRTP::new(
+        RTCRtpCodecCapability {
+            mime_type: MIME_TYPE_H264.to_owned(),
+            ..Default::default()
+        },
+        format!("video"),
+        format!("omniroom-client"),
+    ));
+    let audio_track = Arc::new(TrackLocalStaticRTP::new(
+        RTCRtpCodecCapability {
+            mime_type: MIME_TYPE_OPUS.to_owned(),
+            ..Default::default()
+        },
+        format!("audio"),
+        format!("omniroom-client"),
+    ));
+
+    let rtp_sender_video = pc
+        .add_track(Arc::clone(&video_track) as Arc<dyn TrackLocal + Send + Sync>)
+        .await?;
+
+    let rtp_sender_audio = pc
+        .add_track(Arc::clone(&audio_track) as Arc<dyn TrackLocal + Send + Sync>)
+        .await?;
+
+    tokio::spawn(async move {
+        let mut rtcp_buf = vec![0u8; 1500];
+        while let Ok((_, _)) = rtp_sender_video.read(&mut rtcp_buf).await {}
+    });
+    tokio::spawn(async move {
+        let mut rtcp_buf = vec![0u8; 1500];
+        while let Ok((_, _)) = rtp_sender_audio.read(&mut rtcp_buf).await {}
+    });
+
     // let pc2 = pc.clone();
     pc.on_track(Box::new(move |_track: Arc<TrackRemote>, _, _| {
         // tokio::spawn(async move {
@@ -128,7 +167,8 @@ async fn main() -> Result<()> {
 
     pc.gathering_complete_promise().await.recv().await;
 
-    // let late_offer = pc.local_description().await.unwrap().sdp;
+    let late_offer = pc.local_description().await.unwrap().sdp;
+    println!("{}", late_offer);
     // reqwest POST offer then:
     // pc.set_remote_description(RTCSessionDescription::offer(offer)?)
     //     .await?;
