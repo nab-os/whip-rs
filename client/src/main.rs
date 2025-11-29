@@ -1,17 +1,15 @@
 use std::{env, sync::Arc};
-use webrtc::{
-    api::media_engine::{MIME_TYPE_H264, MIME_TYPE_OPUS},
-    peer_connection::sdp::session_description::RTCSessionDescription,
-    rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
-    track::track_local::{TrackLocal, track_local_static_rtp::TrackLocalStaticRTP},
-};
 
 use argh::FromArgs;
 
 use tokio::net::UdpSocket;
+
 use webrtc::{
     api::{
-        APIBuilder, interceptor_registry::register_default_interceptors, media_engine::MediaEngine,
+        APIBuilder,
+        interceptor_registry::register_default_interceptors,
+        media_engine::MediaEngine,
+        media_engine::{MIME_TYPE_H264, MIME_TYPE_OPUS},
         setting_engine::SettingEngine,
     },
     ice::{
@@ -21,8 +19,13 @@ use webrtc::{
     ice_transport::{ice_candidate_type::RTCIceCandidateType, ice_server::RTCIceServer},
     interceptor::registry::Registry,
     peer_connection::configuration::RTCConfiguration,
+    peer_connection::sdp::session_description::RTCSessionDescription,
+    rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
+    track::track_local::{TrackLocal, track_local_static_rtp::TrackLocalStaticRTP},
     track::track_remote::TrackRemote,
 };
+
+use gst::prelude::{ElementExt, GstObjectExt};
 
 /// Whip signaling broadcast server
 #[derive(FromArgs)]
@@ -48,6 +51,9 @@ pub enum Error {
 
     #[error("Reqwest Error: {0}")]
     ReqwestError(#[from] reqwest::Error),
+
+    #[error("Gstreamer Error: {0}")]
+    GstreamerError(#[from] gst::glib::Error),
 }
 
 #[tokio::main]
@@ -105,6 +111,14 @@ async fn main() -> Result<()> {
         .build();
 
     let client = reqwest::Client::new();
+
+    // Gst init
+    gst::init()?;
+    let mut context = gst::ParseContext::new();
+    let pipeline_str = "";
+    let mut pipeline =
+        gst::parse::launch_full(&pipeline_str, Some(&mut context), gst::ParseFlags::empty())?;
+    let bus = pipeline.bus().unwrap();
 
     // New Peer Connection
     let pc = Arc::new(api.new_peer_connection(default_config).await?);
@@ -186,6 +200,32 @@ async fn main() -> Result<()> {
         .await?;
     pc.set_remote_description(RTCSessionDescription::offer(answer)?)
         .await?;
+
+    // On webrtc ready
+    // pipeline
+    //     .set_state(gst::State::Playing)
+    //     .expect("Unable to set the pipeline to the `Playing` state");
+    // for msg in bus.iter_timed(gst::ClockTime::NONE) {
+    //     use gst::MessageView;
+
+    //     match msg.view() {
+    //         MessageView::Eos(..) => break,
+    //         MessageView::Error(err) => {
+    //             println!(
+    //                 "Error from {:?}: {} ({:?})",
+    //                 err.src().map(|s| s.path_string()),
+    //                 err.error(),
+    //                 err.debug()
+    //             );
+    //             break;
+    //         }
+    //         _ => (),
+    //     }
+    // }
+
+    // pipeline
+    //     .set_state(gst::State::Null)
+    //     .expect("Unable to set the pipeline to the `Null` state");
 
     Ok(())
 }
