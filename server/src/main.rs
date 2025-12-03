@@ -88,6 +88,7 @@ pub enum Error {
 
 impl ResponseError for Error {
     fn status_code(&self) -> actix_web::http::StatusCode {
+        eprintln!("{}", self);
         match self {
             Error::SessionGetError(_) => StatusCode::SERVICE_UNAVAILABLE,
             Error::SessionInsertError(_) => StatusCode::SERVICE_UNAVAILABLE,
