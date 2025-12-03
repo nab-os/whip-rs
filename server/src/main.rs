@@ -5,7 +5,7 @@ use argh::{FromArgs, from_env};
 use actix_cors::Cors;
 use actix_files as fs;
 use actix_web::{
-    App, HttpRequest, HttpResponse, HttpServer, Responder, ResponseError, delete,
+    App, HttpMessage, HttpRequest, HttpResponse, HttpServer, Responder, ResponseError, delete,
     http::{StatusCode, header::ContentType},
     middleware, options, patch, post,
     web::{self, Data, Path},
@@ -24,10 +24,7 @@ use webrtc::{
         udp_mux::{UDPMuxDefault, UDPMuxParams},
         udp_network::UDPNetwork,
     },
-    ice_transport::{
-        ice_candidate::RTCIceCandidate, ice_candidate_type::RTCIceCandidateType,
-        ice_server::RTCIceServer,
-    },
+    ice_transport::{ice_candidate_type::RTCIceCandidateType, ice_server::RTCIceServer},
     interceptor::registry::Registry,
     peer_connection::{
         RTCPeerConnection, configuration::RTCConfiguration,
@@ -107,7 +104,7 @@ impl ResponseError for Error {
 
 #[options("/whip")]
 async fn whip_options(whip_data: Data<WhipData>) -> Result<impl Responder> {
-    let mut res = HttpResponse::Created();
+    let mut res = HttpResponse::Ok();
     res.content_type("application/sdp");
 
     // Headers
@@ -117,7 +114,7 @@ async fn whip_options(whip_data: Data<WhipData>) -> Result<impl Responder> {
         }
     }
 
-    Ok(HttpResponse::Ok())
+    Ok(res)
 }
 
 #[post("/whip")]
@@ -231,37 +228,105 @@ async fn whip_delete(
     Ok(HttpResponse::Ok())
 }
 
+enum ExpectedFields {
+    NONE,
+    N(usize),
+    MANY,
+}
+
+fn extract_sdp_field<'a>(
+    lines: Vec<&'a str>,
+    prefix: &'a str,
+    expects: ExpectedFields,
+) -> Result<Vec<&'a str>> {
+    let fields: Vec<&str> = lines
+        .into_iter()
+        .filter_map(|line| line.strip_prefix(prefix))
+        .collect();
+
+    match expects {
+        ExpectedFields::NONE => {
+            if fields.len() != 0 {
+                return Err(Error::InternalError("SDP malformed".to_string()));
+            }
+        }
+        ExpectedFields::N(n) => {
+            if fields.len() != n {
+                return Err(Error::InternalError("SDP malformed".to_string()));
+            }
+        }
+        ExpectedFields::MANY => {
+            if fields.len() == 0 {
+                return Err(Error::InternalError("SDP malformed".to_string()));
+            }
+        }
+    }
+    Ok(fields)
+}
+
 #[patch("/resource/{session_id}")]
 async fn whip_patch(
-    auth: BearerAuth,
+    req: HttpRequest,
     session_id: Path<String>,
     sdp_patch: String,
     whip_data: Data<WhipData>,
 ) -> Result<impl Responder> {
-    println!("{sdp_patch}");
+    if req.content_type() != "application/trickle-ice-sdpfrag" {
+        return Ok(HttpResponse::BadRequest());
+    }
+
     let session_id = Uuid::parse_str(&session_id)?;
-    let lines = sdp_patch.split("\r\n");
+    let patch_lines: Vec<&str> = sdp_patch.split("\r\n").collect();
+
+    let patch_ufrags =
+        extract_sdp_field(patch_lines.clone(), "a=ice-ufrag:", ExpectedFields::N(1))?;
+    let patch_ufrag = patch_ufrags.last().unwrap();
+    let patch_pwds = extract_sdp_field(patch_lines.clone(), "a=ice-pwd:", ExpectedFields::N(1))?;
+    let patch_pwd = patch_pwds.last().unwrap();
 
     let whips = whip_data.whips.lock().await;
     let pc = whips.get(&session_id).unwrap();
-    let candidates: Vec<&str> = lines
-        .into_iter()
-        .filter_map(|line| line.strip_prefix("a=candidate"))
-        .collect();
 
-    for candidate in candidates {
-        pc.add_ice_candidate(webrtc::ice_transport::ice_candidate::RTCIceCandidateInit {
-            candidate: candidate.to_string(),
-            sdp_mid: None,
-            sdp_mline_index: None,
-            username_fragment: None,
-        })
-        .await?;
+    let remote_description = pc.remote_description().await.unwrap().sdp;
+    let description_lines: Vec<&str> = remote_description.split("\r\n").collect();
+
+    let current_ufrags = extract_sdp_field(
+        description_lines.clone(),
+        "a=ice-ufrag:",
+        ExpectedFields::MANY,
+    )?;
+    let current_ufrag = current_ufrags.first().unwrap();
+    let current_pwds = extract_sdp_field(
+        description_lines.clone(),
+        "a=ice-pwd:",
+        ExpectedFields::MANY,
+    )?;
+    let current_pwd = current_pwds.first().unwrap();
+
+    if current_ufrag == patch_ufrag && current_pwd == patch_pwd {
+        let candidates: Vec<&str> = patch_lines
+            .clone()
+            .into_iter()
+            .filter(|line| line.starts_with("a=candidate"))
+            .filter_map(|candidate| candidate.strip_prefix("a="))
+            .collect();
+
+        for candidate in candidates {
+            pc.add_ice_candidate(webrtc::ice_transport::ice_candidate::RTCIceCandidateInit {
+                candidate: candidate.to_string(),
+                sdp_mid: None,
+                sdp_mline_index: None,
+                username_fragment: None,
+            })
+            .await?;
+        }
+    } else {
+        pc.restart_ice().await?;
     }
 
     let mut res = HttpResponse::Created();
-    res.content_type("application/sdp");
-    Ok(HttpResponse::Ok())
+    res.content_type("application/trickle-ice-sdpfrag");
+    Ok(HttpResponse::NoContent())
 }
 
 #[post("/whep")]
