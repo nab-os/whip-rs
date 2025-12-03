@@ -234,10 +234,30 @@ async fn whip_delete(
 async fn whip_patch(
     auth: BearerAuth,
     session_id: Path<String>,
-    ice_candidate: String,
+    sdp_patch: String,
     whip_data: Data<WhipData>,
 ) -> Result<impl Responder> {
-    dbg!(ice_candidate);
+    println!("{sdp_patch}");
+    let session_id = Uuid::parse_str(&session_id)?;
+    let lines = sdp_patch.split("\r\n");
+
+    let whips = whip_data.whips.lock().await;
+    let pc = whips.get(&session_id).unwrap();
+    let candidates: Vec<&str> = lines
+        .into_iter()
+        .filter_map(|line| line.strip_prefix("a=candidate"))
+        .collect();
+
+    for candidate in candidates {
+        pc.add_ice_candidate(webrtc::ice_transport::ice_candidate::RTCIceCandidateInit {
+            candidate: candidate.to_string(),
+            sdp_mid: None,
+            sdp_mline_index: None,
+            username_fragment: None,
+        })
+        .await?;
+    }
+
     let mut res = HttpResponse::Created();
     res.content_type("application/sdp");
     Ok(HttpResponse::Ok())
