@@ -460,16 +460,24 @@ async fn main() -> std::io::Result<()> {
     }
 
     let mut nat_ips: Option<String> = env::var("NAT_IPS").ok();
-    if let Some(ips) = args.nat_ips {
+    if let Some(ips) = args.nat_ips
+        && !ips.is_empty()
+    {
         nat_ips = Some(ips);
     }
     if let Some(nat_ips) = nat_ips {
-        let nat_ips: Vec<String> = nat_ips.split(',').map(|ip| ip.to_string()).collect();
-        println!("Using NAT 1 to 1 with IPs:");
-        for ip in nat_ips.clone().into_iter() {
-            println!(" - {}", ip);
+        let nat_ips: Vec<String> = nat_ips
+            .split(',')
+            .map(|ip| ip.to_string())
+            .filter(|ip| !ip.is_empty())
+            .collect();
+        if !nat_ips.is_empty() {
+            println!("Using NAT 1 to 1 with IPs:");
+            for ip in nat_ips.clone().into_iter() {
+                println!(" - {}", ip);
+            }
+            setting_engine.set_nat_1to1_ips(nat_ips, RTCIceCandidateType::Host);
         }
-        setting_engine.set_nat_1to1_ips(nat_ips, RTCIceCandidateType::Host);
     }
 
     let mut registry = Registry::new();
